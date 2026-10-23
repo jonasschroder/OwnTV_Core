@@ -84,7 +84,8 @@ class ExoSubtitleEngine(
     private var surface: Surface? = null
     private var pendingSubLang: String? = null
     private var pendingSubTypeIndex: Int = -1
-    private var subtitleApplied = false
+    private val subtitleSelection = PendingSubtitleSelection()
+    private var pendingSubtitlesOff = false
     // Side-loaded external subtitle files (OpenSubtitles/local). ExoPlayer
     // can't attach a subtitle to a playing item, so each add/restore re-prepares the same URL with
     // SubtitleConfigurations at the current position (a seamless re-prepare).
@@ -380,6 +381,7 @@ class ExoSubtitleEngine(
         /** This item is a catch-up / live-rewind archive: mid-GOP, so a blank picture on the hardware
          *  decoder is rescued in software instead of erroring — see [noVideoWatchdog]. */
         isArchive: Boolean = false,
+        subtitlesOff: Boolean = false,
     ) {
         // "Hardware decoding = Off" used to reach mpv only, so a user who turned it off to work around a
         // broken vendor decoder still got that decoder the moment playback landed on ExoPlayer. The
@@ -388,9 +390,10 @@ class ExoSubtitleEngine(
         isArchiveItem = isArchive
         this.surface = surface
         fallbackMode = fallback
+        pendingSubtitlesOff = subtitlesOff
         pendingSubLang = subLang
         pendingSubTypeIndex = subTypeIndex
-        subtitleApplied = false
+        subtitleSelection.reset()
         firstFrameSeen = false
         hasVideoTrack = true
         undecodableAudioReported = false
@@ -504,8 +507,9 @@ class ExoSubtitleEngine(
         val p = player ?: return
         val url = currentUrl ?: return
         if (externalSubs.none { it.path == path }) externalSubs.add(ExternalSubCfg(path, title, lang, source))
+        pendingSubtitlesOff = false
         pendingExternalLabel = title
-        subtitleApplied = false
+        subtitleSelection.reset()
         reprepareKeepingPosition(p, url)
     }
 
@@ -532,10 +536,12 @@ class ExoSubtitleEngine(
                 idx++
             }
         }
-        pendingSubTypeIndex = selIdx // -1 + null lang → applyPendingSubtitle keeps text OFF
+        // No track yet is not an explicit Off while automatic language discovery is pending.
+        pendingSubtitlesOff = selIdx < 0 && (pendingSubtitlesOff || subtitleSelection.applied)
+        pendingSubTypeIndex = selIdx
         pendingSubLang = if (selIdx >= 0) selLang else null
         pendingExternalLabel = null
-        subtitleApplied = false
+        subtitleSelection.reset()
         reprepareKeepingPosition(p, url)
     }
 
@@ -549,7 +555,7 @@ class ExoSubtitleEngine(
         subDelayMs = ms
         delayLabel = activeLabel
         pendingExternalLabel = activeLabel // re-select after the re-prepare
-        subtitleApplied = false
+        subtitleSelection.reset()
         // Nothing to generate (offset cleared, unknown label) or already generated: re-prepare now.
         if (source == null || ms == 0 || shiftedSubs.containsKey(shiftKey(source, ms))) {
             reprepareKeepingPosition(p, url)
@@ -912,6 +918,12 @@ class ExoSubtitleEngine(
     @Volatile var prefAudioLang: String = ""
 
     @Volatile var prefSubLang: String = ""
+        set(value) {
+            field = value
+            // A late profile preference may satisfy an unresolved automatic choice; manual picks stay final.
+            applyLanguagePrefs()
+            player?.let { applyPendingSubtitle(it.currentTracks) }
+        }
 
     /** The Settings limit for this item (lines, null = none), pushed in by [OwnTVPlayer] before
      *  [start]; and a Quality-menu pick, which [start] forgets for a different file. */
@@ -1076,8 +1088,15 @@ class ExoSubtitleEngine(
     /** Force-select the image subtitle track that matches the one the user picked in mpv's list:
      *  prefer the same ordinal among text tracks, then fall back to language. */
     private fun applyPendingSubtitle(tracks: Tracks) {
-        if (subtitleApplied) return
+        if (subtitleSelection.applied) return
         val p = player ?: return
+        if (pendingSubtitlesOff) {
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+            subtitleSelection.finish()
+            return
+        }
         // A just-side-loaded external subtitle: select it by its label (set on the SubtitleConfiguration).
         pendingExternalLabel?.let { label ->
             for (group in tracks.groups) {
@@ -1089,7 +1108,7 @@ class ExoSubtitleEngine(
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                             .build()
                         pendingExternalLabel = null
-                        subtitleApplied = true
+                        subtitleSelection.finish()
                         return
                     }
                 }
@@ -1106,63 +1125,37 @@ class ExoSubtitleEngine(
             }
         }
         if (textTracks.isEmpty()) return
-        // A fresh item has no manual carry-over. Honour the configured language explicitly:
-        // this handoff path used to disable the text renderer after Media3 selected it.
-        // Blank preference or no matching track leaves subtitles off rather than choosing randomly.
-        if (pendingSubTypeIndex < 0 && pendingSubLang == null) {
-            val preferred = prefSubLang.takeIf { it.isNotBlank() }?.let { wanted ->
-                textTracks.firstOrNull { subtitleLanguageMatches(wanted, it.lang) }
-            }
-            val builder = p.trackSelectionParameters.buildUpon()
-            if (preferred == null) {
-                builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            } else {
-                builder
-                    .setOverrideForType(TrackSelectionOverride(preferred.group, listOf(preferred.index)))
-                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            }
-            p.trackSelectionParameters = builder.build()
-            subtitleApplied = true
-            return
-        }
-        // The ordinal is a cross-engine guess — mpv's track order need not survive into ExoPlayer's — so
-        // it only stands when the track it lands on also carries the language the user picked. Failing
-        // that, match by language; and force a track only when there is exactly one it could be. The old
-        // blind ".first()" tail handed the user an arbitrary subtitle in a language they never asked for,
-        // with nothing on screen to say so.
-        val target = textTracks.getOrNull(pendingSubTypeIndex)
-            ?.takeIf { pendingSubLang == null || it.lang.equals(pendingSubLang, ignoreCase = true) }
-            ?: pendingSubLang?.let { lang -> textTracks.firstOrNull { it.lang.equals(lang, ignoreCase = true) } }
-            ?: textTracks.singleOrNull()
+        val target = subtitleSelection.resolve(
+            textTracks.map { it.lang }, prefSubLang, pendingSubTypeIndex, pendingSubLang,
+        )?.let { textTracks[it] }
+        val builder = p.trackSelectionParameters.buildUpon()
         if (target == null) {
-            android.util.Log.w(TAG, "no text track matches the picked subtitle (index=$pendingSubTypeIndex lang=$pendingSubLang) — leaving subtitles off")
-            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                .build()
-            subtitleApplied = true
-            return
+            builder.clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+        } else {
+            builder.setOverrideForType(TrackSelectionOverride(target.group, listOf(target.index)))
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
         }
-        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-            .setOverrideForType(TrackSelectionOverride(target.group, listOf(target.index)))
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            .build()
-        subtitleApplied = true
+        p.trackSelectionParameters = builder.build()
     }
 
     /** HUD subtitle pick while fallback playback is active: select the text/image subtitle by its
      *  ordinal among this file's text tracks (mpv's typeIndex lines up with ExoPlayer's order). */
     fun selectTextTrack(typeIndex: Int, lang: String?) {
+        pendingExternalLabel = null
+        pendingSubtitlesOff = false
         pendingSubTypeIndex = typeIndex
         pendingSubLang = lang
-        subtitleApplied = false
+        subtitleSelection.reset()
         player?.let { applyPendingSubtitle(it.currentTracks) }
     }
 
     /** HUD "subtitles off" while fallback playback is active. */
     fun disableTextTracks() {
+        pendingExternalLabel = null
+        pendingSubtitlesOff = true
         pendingSubTypeIndex = -1
         pendingSubLang = null
-        subtitleApplied = true
+        subtitleSelection.finish()
         val p = player ?: return
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
