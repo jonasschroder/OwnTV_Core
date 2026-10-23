@@ -1192,6 +1192,7 @@ class OwnTVPlayer(
         }.launchIn(scope)
         playbackSettings.field { it.preferredSubLang }.onEach { lang ->
             prefSubLang = lang
+            exoEngine?.prefSubLang = lang
             if (initialized) mpvAsync {
                 setPropertyString("slang", mpvLanguageList(lang))
                 setPropertyString("subs-with-matching-audio", if (lang.isBlank()) "no" else "yes")
@@ -2039,6 +2040,7 @@ class OwnTVPlayer(
             // decoder the same way it failed mpv's.
             preferSoftware = item.forceSoftwareThisLoad,
             isArchive = item.archiveThisItem,
+            subtitlesOff = trackRecall?.subtitle?.explicitlyOff == true,
         )
         // Re-apply the carried subtitle's remembered timing (§8.4) on the incoming engine.
         if (extSelect != null) onActiveSubtitleChanged?.invoke("path:${extSelect.path}")
@@ -3597,9 +3599,8 @@ class OwnTVPlayer(
     private class TrackRecall(val key: String) {
         var loaded = false
         var audio: String? = null
-        var sub: String? = null
+        val subtitle = PendingSubtitleRecall()
         var audioDone = false
-        var subDone = false
     }
 
     @Volatile private var trackRecall: TrackRecall? = null
@@ -3616,7 +3617,7 @@ class OwnTVPlayer(
             } else null
             if (trackRecall !== recall) return@launch // a newer load started while we were reading
             recall.audio = remembered?.first ?: original
-            recall.sub = remembered?.second
+            recall.subtitle.load(remembered?.second)
             recall.loaded = true
             applyRememberedTracks()
         }
@@ -3632,15 +3633,11 @@ class OwnTVPlayer(
             TrackMemory.audioToSelect(audio, recall.audio)?.let { applyAudioTrack(it.mpvId) }
         }
         val subs = _subTrackList.value
-        if (!recall.subDone && subs.isNotEmpty()) {
-            recall.subDone = true
-            // A bitmap subtitle is only chosen where ExoPlayer already owns the item; on mpv it would
-            // cost a handoff (VOD) or cannot be drawn at all (live).
-            when (val action = TrackMemory.subtitleAction(subs, recall.sub, allowImage = exoActive && item.exoVodFallback)) {
-                TrackMemory.SubtitleAction.None -> Unit
-                TrackMemory.SubtitleAction.Off -> applySubtitlesOff()
-                is TrackMemory.SubtitleAction.Select -> applySubtitleTrack(action.track.mpvId)
-            }
+        // Retry a missing remembered language when more tracks arrive. Never trigger an MPV bitmap handoff.
+        when (val action = recall.subtitle.action(subs, allowImage = exoActive && item.exoVodFallback)) {
+            TrackMemory.SubtitleAction.None -> Unit
+            TrackMemory.SubtitleAction.Off -> applySubtitlesOff()
+            is TrackMemory.SubtitleAction.Select -> applySubtitleTrack(action.track.mpvId)
         }
     }
 
@@ -3656,7 +3653,7 @@ class OwnTVPlayer(
 
     private fun rememberSubtitleLang(lang: String?) {
         val recall = trackRecall ?: return
-        recall.subDone = true
+        recall.subtitle.manual(lang)
         val key = recall.key
         if (lang.isNullOrBlank()) return
         scope.launch { playbackPrefs.rememberSubtitleLang(key, lang) }

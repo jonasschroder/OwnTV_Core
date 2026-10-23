@@ -35,8 +35,9 @@ private fun languageIdentity(code: String): String {
  * mpv compares the text. "deu" → "deu,ger,de". Blank stays blank (no preference).
  */
 internal fun mpvLanguageList(code: String): String {
-    val t = code.trim().lowercase(Locale.ROOT)
-    if (t.isEmpty()) return ""
+    val raw = code.trim().replace('_', '-').lowercase(Locale.ROOT)
+    if (raw.isEmpty()) return ""
+    val t = languageIdentity(raw)
     val b = BIBLIOGRAPHIC_TO_TERMINOLOGY.entries.firstOrNull { it.value == t }?.key
-    return listOfNotNull(t, b, tv.own.owntv.core.player.TrackLanguages.twoLetter(t)).distinct().joinToString(",")
+    return listOfNotNull(raw, t, b, tv.own.owntv.core.player.TrackLanguages.twoLetter(t)).distinct().joinToString(",")
 }
