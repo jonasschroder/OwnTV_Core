@@ -93,3 +93,4 @@ jobs:
             player-core/build/reports/tests/**
             player-core/build/reports/lint-results-*.html
           if-no-files-found: warn
+          retention-days: 7
