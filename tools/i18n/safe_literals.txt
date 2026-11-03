@@ -5403,7 +5403,6 @@
 1	technical	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	mp4v-es
 1	technical	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	mpeg2
 1	log	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	no audio track ExoPlayer can play ($formats) — handing the film back
-1	log	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	no text track matches the picked subtitle (index=$pendingSubTypeIndex lang=$pendingSubLang) — leaving subtitles off
 1	log	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	no video frame after ${noVideoTimeoutMs()}ms — falling back
 1	log	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	no video track in this file — audio-only, no-video watchdog disarmed
 1	technical	player-core/src/main/java/tv/own/owntv/player/ExoSubtitleEngine.kt	off

@@ -39,4 +39,15 @@ class PreferredLanguageTest {
     fun `the write key belongs to the active profile`() {
         assertEquals("pref_sub_lang_5", activeProfileLangKey(mutablePreferencesOf(active to 5L), PREF_SUB_LANG_PREFIX).name)
     }
+    @Test fun swedishSubtitlePreferenceIsIsolatedByProfileWithLegacyFallback() {
+        val key = SettingsRepository.Keys.PREF_SUB_LANG
+        val prefs = mutablePreferencesOf(active to 2L, key to "swe",
+            stringPreferencesKey("pref_sub_lang_2") to "sv-SE",
+            stringPreferencesKey("pref_sub_lang_3") to "eng")
+        assertEquals("sv-SE", profileLang(prefs, PREF_SUB_LANG_PREFIX, key))
+        prefs[active] = 3L
+        assertEquals("eng", profileLang(prefs, PREF_SUB_LANG_PREFIX, key))
+        prefs[active] = 4L
+        assertEquals("swe", profileLang(prefs, PREF_SUB_LANG_PREFIX, key))
+    }
 }

@@ -39,3 +39,39 @@ internal object TrackMemory {
         return track?.let { SubtitleAction.Select(it) } ?: SubtitleAction.None
     }
 }
+
+/** One item's pending remembered language. Owned by TrackRecall, never shared across loads/profiles. */
+internal class PendingSubtitleRecall {
+    var choice: String? = null
+        private set
+    var complete = false
+        private set
+    val explicitlyOff: Boolean get() = complete && choice == PlaybackPrefsStore.SUBTITLES_OFF
+
+    fun load(language: String?) {
+        if (!complete) choice = language
+    }
+
+    fun manual(language: String?) {
+        choice = language
+        complete = true
+    }
+
+    fun action(tracks: List<TrackOption>, allowImage: Boolean): TrackMemory.SubtitleAction {
+        if (complete) return TrackMemory.SubtitleAction.None
+        if (choice.isNullOrBlank()) {
+            complete = true
+            return TrackMemory.SubtitleAction.None
+        }
+        // Off must reach the engine even before the first subtitle track appears.
+        if (choice == PlaybackPrefsStore.SUBTITLES_OFF) {
+            complete = true
+            return TrackMemory.SubtitleAction.Off
+        }
+        val action = TrackMemory.subtitleAction(tracks, choice, allowImage)
+        complete = action is TrackMemory.SubtitleAction.Select || tracks.any {
+            it.selected && subtitleLanguageMatches(choice!!, it.lang)
+        }
+        return action
+    }
+}

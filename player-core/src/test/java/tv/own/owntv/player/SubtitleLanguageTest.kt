@@ -27,4 +27,15 @@ class SubtitleLanguageTest {
         assertEquals("eng,en", mpvLanguageList("eng"))
         assertEquals("", mpvLanguageList(""))
     }
+    @Test fun swedishAliasesAndRegionalMpvPreferencesAreEquivalent() {
+        for (tag in listOf("sv", "swe", "sv-SE", " SV_se ", "swe-FI")) {
+            assertTrue(subtitleLanguageMatches("swe", tag))
+            val list = mpvLanguageList(tag).split(',')
+            assertTrue(list.contains("swe"))
+            assertTrue(list.contains("sv"))
+        }
+        for (tag in listOf(null, "", "und", "en", "xyz")) {
+            assertFalse(subtitleLanguageMatches("swe", tag))
+        }
+    }
 }
